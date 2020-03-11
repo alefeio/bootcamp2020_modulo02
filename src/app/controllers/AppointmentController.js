@@ -1,12 +1,14 @@
 import * as Yup from 'yup';
-import { startOfHour, parseISO, isBefore } from 'date-fns';
+import { startOfHour, parseISO, isBefore, format, subHours } from 'date-fns';
+import pt from 'date-fns/locale/pt';
 import Appointment from '../models/Appointment';
 import User from '../models/User';
 import File from '../models/File';
+import Notification from '../schemas/Notification';
 
 class AppointmentController {
   async index(req, res) {
-    const { page = 1 } = req.query
+    const { page = 1 } = req.query;
 
     const appointments = await Appointment.findAll({
       where: { user_id: req.userId, canceled_at: null },
@@ -23,7 +25,7 @@ class AppointmentController {
             {
               model: File,
               as: 'avatar',
-              attributes: ['id', 'path', 'url']
+              attributes: ['id', 'path', 'url'],
             },
           ],
         },
@@ -45,7 +47,7 @@ class AppointmentController {
 
     const { provider_id, date } = req.body;
 
-    // checando se o provider_id é um provider
+    // checar se o provider_id é um provider
     const checkIsProvider = await User.findOne({
       where: { id: provider_id, provider: true },
     });
@@ -56,7 +58,14 @@ class AppointmentController {
         .json({ erro: 'Você não tem permissão para fazer agendamento.' });
     }
 
-    // verifica se a data do agendamento é passada.
+    // chegar se prestador e usuário tem o mesmo id
+    if (req.userId === provider_id) {
+      return res
+        .status(401)
+        .json({ erro: 'Você não pode agendar para si mesmo.' });
+    }
+
+    // verificar se a data do agendamento é passada.
     const hourStart = startOfHour(parseISO(date));
 
     if (isBefore(hourStart, new Date())) {
@@ -65,7 +74,7 @@ class AppointmentController {
         .json({ erro: 'Não é possível agendar em uma data passada.' });
     }
 
-    // verifica a disponibilidade da data
+    // verificar a disponibilidade da data
     const checkAvailability = await Appointment.findOne({
       where: {
         provider_id,
@@ -85,6 +94,44 @@ class AppointmentController {
       provider_id,
       date: hourStart,
     });
+
+    // Notificar prestador de serviço
+    const user = await User.findByPk(req.userId);
+    const formattedDate = format(hourStart, "'dia' dd 'de' MMMM', às' H'h'mm", {
+      locale: pt,
+    });
+
+    await Notification.create({
+      content: `Novo agendamento de ${user.name} para o ${formattedDate}`,
+      user: provider_id,
+    });
+
+    return res.json(appointment);
+  }
+
+  async delete(req, res) {
+    const appointment = await Appointment.findByPk(req.params.id);
+
+    if (appointment.user_id !== req.userId) {
+      return res
+        .status(401)
+        .json({ erro: 'Você não pode cancelar este agendamento.' });
+    }
+
+    const dateWithSub = subHours(appointment.date, 2);
+
+    if (isBefore(dateWithSub, new Date())) {
+      return res
+        .status(401)
+        .json({
+          erro:
+            'Você só pode cancelar agendamentos com 2 horas de antecedência.',
+        });
+    }
+
+    appointment.canceled_at = new Date()
+
+    await appointment.save()
 
     return res.json(appointment);
   }
