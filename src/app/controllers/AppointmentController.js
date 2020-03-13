@@ -6,6 +6,9 @@ import User from '../models/User';
 import File from '../models/File';
 import Notification from '../schemas/Notification';
 
+import CancellationMail from '../jobs/CancellationMail';
+import Queue from '../../lib/Queue';
+
 class AppointmentController {
   async index(req, res) {
     const { page = 1 } = req.query;
@@ -110,7 +113,21 @@ class AppointmentController {
   }
 
   async delete(req, res) {
-    const appointment = await Appointment.findByPk(req.params.id);
+    // criando a variável para guardar os dados do usuário que será enviado por email
+    const appointment = await Appointment.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: 'provider',
+          attributes: ['name', 'email'],
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['name'],
+        },
+      ],
+    });
 
     if (appointment.user_id !== req.userId) {
       return res
@@ -121,17 +138,19 @@ class AppointmentController {
     const dateWithSub = subHours(appointment.date, 2);
 
     if (isBefore(dateWithSub, new Date())) {
-      return res
-        .status(401)
-        .json({
-          erro:
-            'Você só pode cancelar agendamentos com 2 horas de antecedência.',
-        });
+      return res.status(401).json({
+        erro: 'Você só pode cancelar agendamentos com 2 horas de antecedência.',
+      });
     }
 
-    appointment.canceled_at = new Date()
+    appointment.canceled_at = new Date();
 
-    await appointment.save()
+    await appointment.save();
+
+    // enviando a variável appointment para ser enviada por email
+    await Queue.add(CancellationMail.key, {
+      appointment,
+    });
 
     return res.json(appointment);
   }
